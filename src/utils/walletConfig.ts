@@ -5,7 +5,7 @@ export const WalletNotification = {
   onDisconnect: (walletName: string) => {
     console.log(`[Wallet Disconnected] ${walletName}`);
   },
-  onError: (error: any) => {
+  onError: (error: Error) => {
     console.error('[Wallet Error]', error);
   },
   onNotInstalled: (walletName: string) => {

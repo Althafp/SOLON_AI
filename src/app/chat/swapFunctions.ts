@@ -1,15 +1,17 @@
+// src/app/chat/swapFunctions.ts
 import { PublicKey, Connection, VersionedTransaction, Transaction } from '@solana/web3.js';
 import { getAssociatedTokenAddress, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, createAssociatedTokenAccountInstruction } from '@solana/spl-token';
 import { parseNLPInput, queryLLM } from './chatFunctions';
+import { Token, ChatMessage, SwapRule, SignTransactionType } from './types';
 
 export const validateSwapParams = (
   amount: number,
   inputMint: string,
   outputMint: string,
-  token: any,
-  rules: { minSwapAmount?: number; maxSwapAmount?: number; avoidMemeCoins?: boolean; avoidNewCoins?: boolean }[]
+  token: Token,
+  rules: SwapRule[]
 ) => {
-  const errors = [];
+  const errors: string[] = [];
   if (!amount || amount <= 0) errors.push('Invalid swap amount');
   if (!inputMint || !outputMint) errors.push('Missing token addresses');
   if (inputMint === outputMint) errors.push('Cannot swap token for itself');
@@ -28,7 +30,7 @@ export const validateSwapParams = (
     if (rule.avoidMemeCoins && token.tags?.includes('meme')) {
       errors.push('Token is a meme coin, which violates your rules');
     }
-    if (rule.avoidNewCoins && token.created_at > Date.now() - 7 * 24 * 60 * 60 * 1000) {
+    if (rule.avoidNewCoins && new Date(token.created_at).getTime() > Date.now() - 7 * 24 * 60 * 60 * 1000) {
       errors.push('Token is less than 7 days old, which violates your rules');
     }
   });
@@ -40,12 +42,12 @@ export const swapAgent = async (
   amount: number,
   inputMint: string,
   outputMint: string,
-  selectedToken: any,
-  setTokenChatMessages: (cb: (prev: any[]) => any[]) => void,
+  selectedToken: Token,
+  setTokenChatMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>,
   publicKey: PublicKey | null,
-  signTransaction: any,
+  signTransaction: SignTransactionType,
   connection: Connection,
-  rules: { minSwapAmount?: number; maxSwapAmount?: number; avoidMemeCoins?: boolean; avoidNewCoins?: boolean }[]
+  rules: SwapRule[]
 ) => {
   if (!publicKey || !signTransaction) {
     setTokenChatMessages(prev => [
@@ -79,9 +81,9 @@ export const swapAgent = async (
       try {
         accountInfo = await connection.getAccountInfo(merchantTokenAccount, 'confirmed');
         break;
-      } catch (rpcErr) {
+      } catch (rpcErr: unknown) {
         if (attempt === 2) {
-          throw new Error(`Failed to fetch account info for ${merchantTokenAccount.toBase58()}: ${rpcErr.message}. The public RPC endpoint may be rate-limited or blocking browser requests.`);
+          throw new Error(`Failed to fetch account info for ${merchantTokenAccount.toBase58()}: ${(rpcErr as Error).message}. The public RPC endpoint may be rate-limited or blocking browser requests.`);
         }
         setTokenChatMessages(prev => [
           ...prev,
@@ -114,7 +116,7 @@ export const swapAgent = async (
         maxRetries: 10,
         preflightCommitment: 'finalized',
       });
-      await connection.confirmTransaction({ signature: createSignature }, 'finalized');
+      await connection.confirmTransaction(createSignature, 'finalized');
       setTokenChatMessages(prev => [
         ...prev,
         { role: 'assistant', content: `✅ Associated token account created! Signature: https://solscan.io/tx/${createSignature}` },
@@ -158,7 +160,7 @@ export const swapAgent = async (
     if (swapResponse.error) throw new Error(`Swap preparation failed: ${swapResponse.error}`);
 
     const transaction = VersionedTransaction.deserialize(Buffer.from(swapResponse.swapTransaction, 'base64'));
-    transaction.feePayer = publicKey;
+
     const signedTransaction = await signTransaction(transaction);
     const transactionBinary = signedTransaction.serialize();
 
@@ -173,18 +175,16 @@ export const swapAgent = async (
       { role: 'assistant', content: `⏳ Transaction submitted! Signature: ${signature}\n\nWaiting for confirmation...` },
     ]);
 
-    const confirmation = await connection.confirmTransaction({ signature }, 'finalized');
-    if (confirmation.value.err) throw new Error(`Failed to confirm transaction: ${JSON.stringify(confirmation.value.err)}`);
-
+    await connection.confirmTransaction(signature, 'finalized');
     setTokenChatMessages(prev => [
       ...prev,
       { role: 'assistant', content: `✅ **Swap Successful!**\n\n🔗 **Transaction:** https://solscan.io/tx/${signature}\n💰 **Amount:** ${solAmount} SOL → ${selectedToken.symbol}\n\nThe tokens should appear in the merchant's wallet shortly!` },
     ]);
-  } catch (err) {
+  } catch (err: unknown) {
     console.error('Swap failed:', err);
     setTokenChatMessages(prev => [
       ...prev,
-      { role: 'assistant', content: `❌ **Swap Failed**\n\n**Error:** ${err.message}\n\n**Possible solutions:**\n• Check your wallet balance (need SOL for gas)\n• Try again later if the public RPC is rate-limited\n• Verify the token mint address\n• Reduce slippage tolerance\n• Use a smaller amount\n\nWould you like to try again?` },
+      { role: 'assistant', content: `❌ **Swap Failed**\n\n**Error:** ${(err as Error).message}\n\n**Possible solutions:**\n• Check your wallet balance (need SOL for gas)\n• Try again later if the public RPC is rate-limited\n• Verify the token mint address\n• Reduce slippage tolerance\n• Use a smaller amount\n\nWould you like to try again?` },
     ]);
   }
 };
@@ -200,13 +200,13 @@ export const handleTokenChatSend = async ({
   rules,
 }: {
   tokenChatInput: string;
-  selectedToken: any;
-  setTokenChatMessages: (cb: (prev: any[]) => any[]) => void;
-  setTokenChatInput: (value: string) => void;
-  setLoadingAction: (value: boolean) => void;
+  selectedToken: Token;
+  setTokenChatMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
+  setTokenChatInput: React.Dispatch<React.SetStateAction<string>>;
+  setLoadingAction: React.Dispatch<React.SetStateAction<boolean>>;
   publicKey: PublicKey | null;
-  signTransaction: any;
-  rules: { minSwapAmount?: number; maxSwapAmount?: number; avoidMemeCoins?: boolean; avoidNewCoins?: boolean }[];
+  signTransaction: SignTransactionType;
+  rules: SwapRule[];
 }) => {
   if (!tokenChatInput.trim() || !selectedToken) return;
   const userMessage = tokenChatInput.trim();
@@ -260,11 +260,11 @@ export const handleTokenChatSend = async ({
         { role: 'assistant', content: `🤔 I'm not sure how to help with "${userMessage}". Try asking about ${selectedToken.symbol}'s price, volume, or say "swap 0.1 SOL for this token". Type "help" for more options.` },
       ]);
     }
-  } catch (error) {
+  } catch (error: unknown) {
     console.error('Chat handler error:', error);
     setTokenChatMessages(prev => [
       ...prev,
-      { role: 'assistant', content: `❌ Sorry, I encountered an error: ${error.message || 'Unknown error'}. Please try again or rephrase your request.` },
+      { role: 'assistant', content: `❌ Sorry, I encountered an error: ${(error as Error).message || 'Unknown error'}. Please try again or rephrase your request.` },
     ]);
   } finally {
     setLoadingAction(false);

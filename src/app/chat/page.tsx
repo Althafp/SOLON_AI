@@ -1,60 +1,103 @@
 'use client';
 
 import { useWallet } from '@solana/wallet-adapter-react';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import { ArrowUp, X, Mic } from 'lucide-react';
-import { handleTokenChatSend } from './swapFunctions';
-import { parseNLPInput, queryLLM } from './chatFunctions';
+import { handleTokenChatSend } from './swapFunctions'; // Adjust path if needed
 import { askQuestion } from './chatBackend';
+import Image from 'next/image';
+import { PublicKey, Transaction, VersionedTransaction } from '@solana/web3.js';
+
+// Define types
+interface Token {
+  symbol: string;
+  address: string;
+  decimals: number;
+  name: string;
+  daily_volume?: number;
+  created_at: string;
+  tags?: string[];
+  extensions?: {
+    coingeckoId?: string;
+  };
+  logoURI?: string;
+}
+
+interface ChatMessage {
+  role: 'user' | 'assistant' | 'agent'; // Added 'agent'
+  content: string;
+}
+
+interface Risk {
+  name: string;
+  description: string;
+  score: number;
+  level: string;
+}
+
+interface SwapRule {
+  minSwapAmount?: number;
+  maxSwapAmount?: number;
+  avoidMemeCoins?: boolean;
+  avoidNewCoins?: boolean;
+}
+
+interface Agent {
+  name: string;
+  type: 'trading' | 'tutor';
+  condition?: string;
+  knowledgeBase?: string;
+}
+
+type SignTransactionType = (transaction: Transaction | VersionedTransaction) => Promise<Transaction | VersionedTransaction>;
 
 export default function ChatPage() {
   const { publicKey, signTransaction } = useWallet();
-  const [messages, setMessages] = useState([
+  const [messages, setMessages] = useState<ChatMessage[]>([
     { role: 'assistant', content: 'Hi! How can I assist you today?' },
   ]);
   const [input, setInput] = useState('');
   const [activeView, setActiveView] = useState<'chat' | 'stats' | 'agents' | 'rules'>('chat');
-  const [tokens, setTokens] = useState<any[]>([]);
-  const [trendingTokens, setTrendingTokens] = useState<any[]>([]);
+  const [tokens, setTokens] = useState<Token[]>([]);
+  const [trendingTokens, setTrendingTokens] = useState<Token[]>([]);
   const [loadingTokens, setLoadingTokens] = useState(false);
-  const [selectedToken, setSelectedToken] = useState<any>(null);
+  const [selectedToken, setSelectedToken] = useState<Token | null>(null);
   const [selectedFilter, setSelectedFilter] = useState<string>('birdeye-trending');
-  const [tokenChatMessages, setTokenChatMessages] = useState([
+  const [tokenChatMessages, setTokenChatMessages] = useState<ChatMessage[]>([
     { role: 'assistant', content: 'Ask me anything about this token! Try "Swap 0.1 SOL for this token", "What’s the price?", "Preview Swap", or "help" for options.' },
   ]);
   const [tokenChatInput, setTokenChatInput] = useState('');
   const [loadingAction, setLoadingAction] = useState(false);
-  const [agents, setAgents] = useState<{ name: string; type: 'trading' | 'tutor'; condition?: string; knowledgeBase?: string }[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
   const [agentForm, setAgentForm] = useState({ name: '', type: 'trading' as 'trading' | 'tutor', condition: '', knowledgeBase: '' });
   const [showAgentForm, setShowAgentForm] = useState(false);
-  const [agentChatMessages, setAgentChatMessages] = useState<{ role: 'user' | 'assistant'; content: string }[]>([
+  const [agentChatMessages, setAgentChatMessages] = useState<ChatMessage[]>([
     { role: 'assistant', content: 'Create an AI Agent to get started!' },
   ]);
   const [agentChatInput, setAgentChatInput] = useState('');
-  const [rules, setRules] = useState<{ minSwapAmount?: number; maxSwapAmount?: number; avoidMemeCoins?: boolean; avoidNewCoins?: boolean }[]>([]);
+  const [rules, setRules] = useState<SwapRule[]>([]);
   const [ruleForm, setRuleForm] = useState({ minSwapAmount: '', maxSwapAmount: '', avoidMemeCoins: false, avoidNewCoins: false });
   const [showRuleForm, setShowRuleForm] = useState(false);
-  const [risks, setRisks] = useState<any[]>([]);
+  const [risks, setRisks] = useState<Risk[]>([]);
   const [loadingRisks, setLoadingRisks] = useState(false);
 
-  const tokenCache = useRef<any[]>([]);
-
-  const filterOptions = [
+  // Memoize filterOptions to fix exhaustive-deps warning
+  const filterOptions = useMemo(() => [
     { label: 'Trending', tag: 'birdeye-trending', url: 'https://lite-api.jup.ag/tokens/v1/tagged/birdeye-trending' },
     { label: 'Community', tag: 'community', url: 'https://lite-api.jup.ag/tokens/v1/tagged/community' },
     { label: 'Strict', tag: 'strict', url: 'https://lite-api.jup.ag/tokens/v1/tagged/strict' },
     { label: 'Verified', tag: 'verified', url: 'https://lite-api.jup.ag/tokens/v1/tagged/verified' },
     { label: 'LST', tag: 'lst', url: 'https://lite-api.jup.ag/tokens/v1/tagged/lst' },
     { label: 'New', tag: 'new', url: 'https://lite-api.jup.ag/tokens/v1/new' },
-  ];
+  ], []);
 
   const BLACKLISTED_TOKENS = [
     'FAKE1234567890abcdef1234567890abcdef12345678',
     'SCAM9876543210fedcba9876543210fedcba98765432',
   ];
   const WEIRD_POOLS = [
-    'POOLLOWLIQ1234567890abcdef1234567890abcdef12',
-    'POOLRISKY9876543210fedcba9876543210fedcba98',
+    'POOLLLOWLIQ1234567890abcdef1234567890abcdef12',
+    'POOLRISKY9876543210fedcba9876543210fedcba987654',
   ];
   const PRICE_IMPACT_THRESHOLD = 5;
   const LIQUIDITY_THRESHOLD = 10000;
@@ -69,28 +112,28 @@ export default function ChatPage() {
       setMessages(prev => [...prev, { role: 'assistant', content: '🤔 Processing...' }]);
       const response = await askQuestion(userMessage);
       setMessages(prev => prev.slice(0, -1).concat({ role: 'assistant', content: response }));
-    } catch (e) {
+    } catch (e: unknown) {
       console.error('Chat query failed:', e);
       setMessages(prev => prev.slice(0, -1).concat({
         role: 'assistant',
-        content: `❌ Sorry, I encountered an error: ${e.message || 'Unknown error'}. Please try again.`,
+        content: `❌ Sorry, I encountered an error: ${e instanceof Error ? e.message : 'Unknown error'}. Please try again.`,
       }));
     }
   };
 
-  const fetchTokens = async (filterTag: string) => {
+  const fetchTokens = useCallback(async (filterTag: string) => {
     setLoadingTokens(true);
     try {
       const selectedOption = filterOptions.find((option) => option.tag === filterTag);
       if (!selectedOption) return;
 
       const res = await fetch(selectedOption.url);
-      const data = await res.json();
+      const data: Token[] = await res.json();
 
       if (filterTag === 'birdeye-trending') {
         const topTokens = data
-          .filter((t: any) => t.daily_volume && t.daily_volume > 0)
-          .sort((a: any, b: any) => b.daily_volume - a.daily_volume)
+          .filter((t: Token) => t.daily_volume && t.daily_volume > 0)
+          .sort((a: Token, b: Token) => b.daily_volume! - a.daily_volume!)
           .slice(0, 20);
         setTrendingTokens(topTokens);
         setTokens([]);
@@ -98,28 +141,29 @@ export default function ChatPage() {
         setTrendingTokens([]);
         setTokens(data);
       }
-    } catch (error) {
-      console.error('Token fetch failed:', error);
+    } catch (e: unknown) {
+      console.error('Token fetch failed:', e);
       setTokenChatMessages(prev => [
         ...prev,
-        { role: 'assistant', content: 'Failed to load tokens. Please try again.' },
+        { role: 'assistant', content: `Failed to load tokens: ${e instanceof Error ? e.message : 'Unknown error'}. Please try again.` },
       ]);
+    } finally {
+      setLoadingTokens(false);
     }
-    setLoadingTokens(false);
-  };
+  }, [filterOptions]);
 
-  const handleTokenClick = async (token: any) => {
+  const handleTokenClick = async (token: Token) => {
     try {
       const res = await fetch(`https://lite-api.jup.ag/tokens/v1/token/${token.address}`);
-      const data = await res.json();
+      const data: Token = await res.json();
       setSelectedToken(data);
       setTokenChatMessages([{ role: 'assistant', content: `Ask me about ${data.name}! Try "Swap 0.1 SOL for this token", "Preview Swap", or "help" for options.` }]);
       setRisks([]);
-    } catch (err) {
-      console.error('Failed to fetch token details:', err);
+    } catch (e: unknown) {
+      console.error('Failed to fetch token details:', e);
       setTokenChatMessages(prev => [
         ...prev,
-        { role: 'assistant', content: 'Failed to load token details. Please try another token.' },
+        { role: 'assistant', content: `Failed to load token details: ${e instanceof Error ? e.message : 'Unknown error'}. Please try another token.` },
       ]);
     }
   };
@@ -129,15 +173,21 @@ export default function ChatPage() {
     try {
       const res = await fetch(`https://api.rugcheck.xyz/v1/tokens/${tokenAddress}/report`);
       const data = await res.json();
-      setRisks(data.risks || []);
-    } catch (err) {
-      console.error('Failed to fetch risks:', err);
+      if (data && Array.isArray(data.risks)) {
+        setRisks(data.risks);
+      } else {
+        throw new Error('Invalid response format');
+      }
+    } catch (e: unknown) {
+      console.error('Failed to fetch risks:', e);
       setTokenChatMessages(prev => [
         ...prev,
-        { role: 'assistant', content: 'Failed to load risk analysis. Please try again.' },
+        { role: 'assistant', content: `Failed to load risk analysis: ${e instanceof Error ? e.message : 'Unknown error'}. Please try again.` },
       ]);
+      setRisks([]);
+    } finally {
+      setLoadingRisks(false);
     }
-    setLoadingRisks(false);
   };
 
   const handleAgentFormSubmit = () => {
@@ -149,22 +199,24 @@ export default function ChatPage() {
       return;
     }
 
-    const newAgent = {
+    const newAgent: Agent = {
       name: agentForm.name,
       type: agentForm.type,
       ...(agentForm.type === 'trading' ? { condition: agentForm.condition } : { knowledgeBase: agentForm.knowledgeBase }),
     };
     setAgents(prev => [...prev, newAgent]);
-    setAgentChatMessages([
+    setAgentChatMessages(prev => [
+      ...prev,
       { role: 'assistant', content: `✅ Agent "${newAgent.name}" created and working on the task!` },
     ]);
     setAgentForm({ name: '', type: 'trading', condition: '', knowledgeBase: '' });
     setShowAgentForm(false);
   };
 
-  const handleAgentClick = (agent: { name: string; type: 'trading' | 'tutor'; condition?: string; knowledgeBase?: string }) => {
+  const handleAgentClick = (agent: Agent) => {
     setActiveView('agents');
-    setAgentChatMessages([
+    setAgentChatMessages(prev => [
+      ...prev,
       { role: 'assistant', content: `Interacting with ${agent.name} (${agent.type === 'trading' ? 'Trading AI' : 'Tutor AI'}). ${agent.type === 'trading' ? `Condition: ${agent.condition}` : `Knowledge Base: ${agent.knowledgeBase}`}` },
     ]);
   };
@@ -178,7 +230,7 @@ export default function ChatPage() {
       return;
     }
 
-    const newRule = {
+    const newRule: SwapRule = {
       ...(ruleForm.minSwapAmount ? { minSwapAmount: parseFloat(ruleForm.minSwapAmount) } : {}),
       ...(ruleForm.maxSwapAmount ? { maxSwapAmount: parseFloat(ruleForm.maxSwapAmount) } : {}),
       ...(ruleForm.avoidMemeCoins ? { avoidMemeCoins: true } : {}),
@@ -187,13 +239,13 @@ export default function ChatPage() {
     setRules(prev => [...prev, newRule]);
     setTokenChatMessages(prev => [
       ...prev,
-      { role: 'assistant', content: `✅ Rule added: ${ruleForm.minSwapAmount ? `Min swap $${ruleForm.minSwapAmount}` : ''}${ruleForm.minSwapAmount && ruleForm.maxSwapAmount ? ', ' : ''}${ruleForm.maxSwapAmount ? `Max swap $${ruleForm.maxSwapAmount}` : ''}${ruleForm.avoidMemeCoins ? ', Avoid meme coins' : ''}${ruleForm.avoidNewCoins ? ', Avoid new coins' : ''}` },
+      { role: 'assistant', content: `✅ Rule added: ${ruleForm.minSwapAmount ? `Min swap $${ruleForm.minSwapAmount}` : ''}${ruleForm.minSwapAmount && ruleForm.maxSwapAmount ? ', ' : ''}${ruleForm.maxSwapAmount ? `Max swap $${ruleForm.maxSwapAmount}` : ''}${ruleForm.avoidMemeCoins ? ', Avoid Meme Coins' : ''}${ruleForm.avoidNewCoins ? ', Avoid New Coins' : ''}` },
     ]);
     setRuleForm({ minSwapAmount: '', maxSwapAmount: '', avoidMemeCoins: false, avoidNewCoins: false });
     setShowRuleForm(false);
   };
 
-  const simulateSwap = (amount: number, token: any) => {
+  const simulateSwap = (amount: number, token: Token) => {
     let riskScore = 0;
     const warnings: string[] = [];
 
@@ -205,13 +257,14 @@ export default function ChatPage() {
 
     const priceImpact = amount > 0.5 ? 7 : 3;
     if (priceImpact > PRICE_IMPACT_THRESHOLD) {
-      warnings.push(`⚠️ Price impact is too high (${priceImpact}% > ${PRICE_IMPACT_THRESHOLD}%).`);
+      warnings.push(`⚠️ Price impact detected (${priceImpact}% > ${PRICE_IMPACT_THRESHOLD}%).`);
       riskScore += 20;
-      console.warn(`Alert: High price impact (${priceImpact}%) for swap. Notify Discord/Telegram.`);
+      console.warn(`Alert: High price impact (${priceImpact}%) for ${token.symbol}. Notify Discord/Telegram.`);
     }
 
-    const liquidity = token.created_at > Date.now() - 7 * 24 * 60 * 60 * 1000 ? 5000 : 20000;
-    if (liquidity < LIQUIDITY_THRESHOLD) {
+    const createdAtDate = new Date(token.created_at);
+    const liquidity = createdAtDate.getTime() >= Date.now() - 7 * 24 * 60 * 60 * 1000 ? 5000 : 20000;
+    if (!isNaN(createdAtDate.getTime()) && liquidity < LIQUIDITY_THRESHOLD) {
       warnings.push(`⚠️ Liquidity looks suspicious ($${liquidity} < $${LIQUIDITY_THRESHOLD}).`);
       riskScore += 20;
       console.warn(`Alert: Low liquidity ($${liquidity}) for ${token.symbol}. Notify Discord/Telegram.`);
@@ -221,7 +274,7 @@ export default function ChatPage() {
     if (usesWeirdPool) {
       warnings.push(`⚠️ Route goes through weird pool (${usesWeirdPool}).`);
       riskScore += 20;
-      console.warn(`Alert: Weird pool (${usesWeirdPool}) detected. Notify Discord/Telegram.`);
+      console.warn(`Alert: Weird pool (${usesWeirdPool}) detected for ${token.symbol}. Notify Discord/Telegram.`);
     }
 
     rules.forEach(rule => {
@@ -230,15 +283,15 @@ export default function ChatPage() {
         riskScore += 20;
       }
       if (rule.maxSwapAmount && amount * 100 > rule.maxSwapAmount) {
-        warnings.push(`⚠️ Swap amount ($${amount * 100}) exceeds rule limit ($${rule.maxSwapAmount}).`);
+        warnings.push(`⚠️ Swap amount ($${amount * 100}) exceeds rule maximum ($${rule.maxSwapAmount}).`);
         riskScore += 20;
       }
       if (rule.avoidMemeCoins && token.tags?.includes('meme')) {
-        warnings.push('⚠️ Token is a meme coin, against your rules.');
+        warnings.push(`⚠️ Token is a meme coin, against your rules.`);
         riskScore += 20;
       }
-      if (rule.avoidNewCoins && token.created_at > Date.now() - 7 * 24 * 60 * 60 * 1000) {
-        warnings.push('⚠️ Token is too new, against your rules.');
+      if (rule.avoidNewCoins && createdAtDate.getTime() >= Date.now() - 7 * 24 * 60 * 60 * 1000) {
+        warnings.push(`⚠️ Token is too new, against your rules.`);
         riskScore += 20;
       }
     });
@@ -248,12 +301,12 @@ export default function ChatPage() {
 
   const handleTokenChat = async (params: {
     tokenChatInput: string;
-    selectedToken: any;
-    setTokenChatMessages: React.Dispatch<React.SetStateAction<{ role: string; content: string }[]>>;
+    selectedToken: Token;
+    setTokenChatMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
     setTokenChatInput: React.Dispatch<React.SetStateAction<string>>;
     setLoadingAction: React.Dispatch<React.SetStateAction<boolean>>;
-    publicKey: any;
-    signTransaction: any;
+    publicKey: PublicKey | null;
+    signTransaction?: SignTransactionType; // Made optional
   }) => {
     const { tokenChatInput, selectedToken, setTokenChatMessages, setTokenChatInput, setLoadingAction, publicKey, signTransaction } = params;
     if (!tokenChatInput.trim() || !selectedToken) return;
@@ -276,6 +329,9 @@ export default function ChatPage() {
         ];
         setTokenChatMessages(prev => [...prev, { role: 'assistant', content: messages.join('\n') }]);
       } else {
+        if (!signTransaction) {
+          throw new Error('Wallet not connected or signTransaction not available');
+        }
         await handleTokenChatSend({
           tokenChatInput,
           selectedToken,
@@ -287,11 +343,11 @@ export default function ChatPage() {
           rules,
         });
       }
-    } catch (err) {
-      console.error('Token chat failed:', err);
+    } catch (e: unknown) {
+      console.error('Token chat failed:', e);
       setTokenChatMessages(prev => [
         ...prev,
-        { role: 'assistant', content: `❌ Error: ${err.message || 'Unknown error'}` },
+        { role: 'assistant', content: `❌ Error: ${e instanceof Error ? e.message : 'Unknown error'}` },
       ]);
     } finally {
       setLoadingAction(false);
@@ -302,7 +358,7 @@ export default function ChatPage() {
     if (activeView === 'stats' && !selectedToken) {
       fetchTokens(selectedFilter);
     }
-  }, [activeView, selectedFilter, selectedToken]);
+  }, [activeView, selectedFilter, selectedToken, fetchTokens]);
 
   return (
     <div className="h-screen w-screen flex bg-gradient-to-br from-gray-900 via-purple-900 to-blue-900 text-white relative font-sans">
@@ -355,11 +411,11 @@ export default function ChatPage() {
           <div className="border-t border-gray-600/50 pt-2 mt-2">
             <h3 className="text-sm font-semibold text-gray-200 mb-2">AI Agents</h3>
             <button
-              className="bg-gradient-to-r from-purple-700 to-blue-700 text-white py-2 px-4 rounded-lg mb-2 w-full text-left hover:from-purple-600 hover:to-blue-600 transition-all duration-300 shadow-md"
+              className="bg-gradient-to-r from-purple-700 to-blue-700 py-2 px-4 rounded-lg mb-2 w-full text-left hover:from-purple-600 hover:to-blue-600 transition-all duration-300 shadow-md text-white"
               onClick={() => {
                 setActiveView('agents');
                 setShowAgentForm(true);
-                setAgentChatMessages([{ role: 'assistant', content: 'Create an AI Agent to get started!' }]);
+                setAgentChatMessages([{ role: 'agent', content: 'Create an AI Agent to get started!' }]);
                 setShowRuleForm(false);
               }}
             >
@@ -408,11 +464,11 @@ export default function ChatPage() {
       <main className="flex-1 flex flex-col relative overflow-hidden bg-gradient-to-br from-gray-900 via-purple-900 to-blue-900">
         {/* Header */}
         <div className="h-14 border-b border-gray-700/50 flex items-center justify-between px-6 bg-gradient-to-r from-gray-800 to-gray-900 shadow-sm">
-          <h1 className="text-lg font-semibold">
-            {activeView === 'chat' ? 'Chat' : activeView === 'stats' ? (selectedToken ? `${selectedToken.name} Details` : 'Solana Stats') : activeView === 'agents' ? 'AI Agents' : 'Set Rules'}
+          <h1 className="text-lg font-semibold text-white">
+            {activeView === 'chat' ? 'Chat' : activeView === 'stats' ? (selectedToken ? `${selectedToken.name} Details` : 'Solana Stats') : activeView === 'agents' ? 'AI Agents' : 'Swap Rules'}
           </h1>
           <div className="text-xs text-gray-400 truncate max-w-[200px] font-mono">
-            {publicKey?.toBase58()}
+            {publicKey?.toBase58() || 'No wallet connected'}
           </div>
         </div>
 
@@ -495,10 +551,13 @@ export default function ChatPage() {
                               className="bg-gradient-to-br from-gray-800 to-gray-900 hover:from-purple-800 hover:to-blue-800 p-4 rounded-xl shadow-lg border border-gray-700/50 cursor-pointer transition-all duration-300"
                             >
                               <div className="flex items-center gap-3 mb-2">
-                                <img
-                                  src={token.logoURI}
-                                  alt={token.symbol}
-                                  className="w-8 h-8 rounded-full"
+                                <Image
+                                  src={token.logoURI || '/fallback-token.png'}
+                                  alt={`${token.symbol} logo`}
+                                  width={32}
+                                  height={32}
+                                  className="rounded-full"
+                                  unoptimized
                                 />
                                 <div>
                                   <div className="font-semibold">{token.name}</div>
@@ -518,7 +577,7 @@ export default function ChatPage() {
                     {tokens.length > 0 && (
                       <div>
                         <h2 className="text-lg font-semibold mb-2">
-                          📦 {selectedFilter === 'birdeye-trending' ? 'All Tokens' : `${selectedFilter.charAt(0).toUpperCase() + selectedFilter.slice(1)} Tokens`}
+                          📦 {selectedFilter === 'birdeye-trending' ? 'All Tokens' : `${selectedFilter.charAt(0).toUpperCase()}${selectedFilter.slice(1)} Tokens`}
                         </h2>
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                           {tokens.map((token) => (
@@ -528,10 +587,13 @@ export default function ChatPage() {
                               className="bg-gradient-to-br from-gray-800 to-gray-900 hover:from-purple-800 hover:to-blue-800 p-4 rounded-xl shadow-lg border border-gray-700/50 cursor-pointer transition-all duration-300"
                             >
                               <div className="flex items-center gap-3 mb-2">
-                                <img
-                                  src={token.logoURI}
-                                  alt={token.symbol}
-                                  className="w-8 h-8 rounded-full"
+                                <Image
+                                  src={token.logoURI || '/fallback-token.png'}
+                                  alt={`${token.symbol} logo`}
+                                  width={32}
+                                  height={32}
+                                  className="rounded-full"
+                                  unoptimized
                                 />
                                 <div>
                                   <div className="font-semibold">{token.name}</div>
@@ -567,10 +629,13 @@ export default function ChatPage() {
                   {/* Token Details */}
                   <div className="bg-gradient-to-br from-gray-800 to-gray-900 p-6 rounded-xl shadow-lg border border-gray-700/50">
                     <div className="flex items-center gap-4 mb-4">
-                      <img
-                        src={selectedToken.logoURI}
-                        alt={selectedToken.symbol}
-                        className="w-12 h-12 rounded-full"
+                      <Image
+                        src={selectedToken.logoURI || '/fallback-token.png'}
+                        alt={`${selectedToken.symbol} logo`}
+                        width={48}
+                        height={48}
+                        className="rounded-full"
+                        unoptimized
                       />
                       <div>
                         <div className="text-xl font-bold">{selectedToken.name}</div>
@@ -584,7 +649,7 @@ export default function ChatPage() {
                       <div><strong>Created At:</strong> {new Date(selectedToken.created_at).toLocaleString()}</div>
                       <div><strong>Tags:</strong> {selectedToken.tags?.join(', ') || 'N/A'}</div>
                       {selectedToken.extensions?.coingeckoId && (
-                        <div><strong>Coingecko:</strong> {selectedToken.extensions.coingeckoId}</div>
+                        <div><strong>CoinGecko ID:</strong> {selectedToken.extensions.coingeckoId}</div>
                       )}
                     </div>
                     <button
@@ -598,7 +663,10 @@ export default function ChatPage() {
                       <div className="mt-4 space-y-2">
                         <h3 className="text-sm font-semibold text-gray-200">Risk Analysis</h3>
                         {risks.map((risk, idx) => (
-                          <div key={idx} className={`text-sm p-2 rounded ${risk.level === 'danger' ? 'bg-red-900/50' : 'bg-yellow-900/50'}`}>
+                          <div
+                            key={idx}
+                            className={`text-sm p-2 rounded ${risk.level === 'danger' ? 'bg-red-900/50' : 'bg-yellow-900/50'}`}
+                          >
                             <strong>{risk.name}:</strong> {risk.description} (Score: {risk.score})
                           </div>
                         ))}
@@ -610,11 +678,13 @@ export default function ChatPage() {
                   <div className="bg-gradient-to-br from-gray-800 to-gray-900 p-6 rounded-xl shadow-lg border border-gray-700/50">
                     <h2 className="text-lg font-semibold mb-4">Price Graph</h2>
                     <div className="h-64 flex items-center justify-center">
-                      <img
+                      <Image
                         src="/imgg.jpeg"
                         alt="Token Price Graph"
-                        className="w-full h-full object-contain rounded-lg"
-                        onError={() => console.error('Failed to load image: /img.jpeg')}
+                        width={900}
+                        height={350}
+                        className="rounded-lg object-contain"
+                        
                       />
                     </div>
                   </div>
@@ -631,7 +701,7 @@ export default function ChatPage() {
                           className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                         >
                           <div
-                            className={`max-w-md px-4 py-3 rounded-xl text-sm shadow-md ${
+                            className={`max-w-md px-4 py-3 rounded-lg text-sm shadow-md ${
                               msg.role === 'user' ? 'bg-gradient-to-r from-purple-700 to-blue-700' : 'bg-gradient-to-r from-gray-700 to-gray-800'
                             }`}
                           >
@@ -645,51 +715,67 @@ export default function ChatPage() {
                         </div>
                       )}
                     </div>
-                    <div className="flex items-center gap-2 bg-gradient-to-r from-purple-800 to-blue-800 rounded-xl px-4 py-2 shadow-md">
+                    <div className="flex items-center gap-2 bg-gradient-to-r from-purple-800 to-blue-800 rounded-lg px-4 py-2 shadow-md">
                       <input
                         type="text"
                         placeholder="Try 'Swap 0.1 SOL for this token', 'Preview Swap', or 'help'"
                         value={tokenChatInput}
                         onChange={(e) => setTokenChatInput(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleTokenChat({
-                          tokenChatInput,
-                          selectedToken,
-                          setTokenChatMessages,
-                          setTokenChatInput,
-                          setLoadingAction,
-                          publicKey,
-                          signTransaction,
-                        })}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && selectedToken) {
+                            handleTokenChat({
+                              tokenChatInput,
+                              selectedToken,
+                              setTokenChatMessages,
+                              setTokenChatInput,
+                              setLoadingAction,
+                              publicKey,
+                              signTransaction,
+                            });
+                          }
+                        }}
                         className="bg-transparent flex-1 text-sm outline-none text-white placeholder-gray-400"
                         disabled={loadingAction}
                       />
                       <button
-                        onClick={() => handleTokenChat({
-                          tokenChatInput,
-                          selectedToken,
-                          setTokenChatMessages,
-                          setTokenChatInput,
-                          setLoadingAction,
-                          publicKey,
-                          signTransaction,
-                        })}
+                        onClick={() => {
+                          if (selectedToken) {
+                            handleTokenChat({
+                              tokenChatInput,
+                              selectedToken,
+                              setTokenChatMessages,
+                              setTokenChatInput,
+                              setLoadingAction,
+                              publicKey,
+                              signTransaction,
+                            });
+                          }
+                        }}
                         disabled={loadingAction}
                       >
-                        <ArrowUp className={`h-5 w-5 ${loadingAction ? 'text-gray-600' : 'text-gray-300 hover:text-white transition-colors duration-200'}`} />
+                        <ArrowUp
+                          className={`h-5 w-5 ${loadingAction ? 'text-gray-600' : 'text-gray-300 hover:text-white transition-colors duration-200'}`}
+                        />
                       </button>
                       <button disabled={loadingAction}>
-                        <Mic className={`h-5 w-5 ${loadingAction ? 'text-gray-600' : 'text-gray-300 hover:text-white transition-colors duration-200'}`} />
+                        <Mic
+                          className={`h-5 w-5 ${loadingAction ? 'text-gray-600' : 'text-gray-300 hover:text-white transition-colors duration-200'}`}
+                        />
                       </button>
                       <button
-                        onClick={() => handleTokenChat({
-                          tokenChatInput: 'Preview Swap',
-                          selectedToken,
-                          setTokenChatMessages,
-                          setTokenChatInput,
-                          setLoadingAction,
-                          publicKey,
-                          signTransaction,
-                        })}
+                        onClick={() => {
+                          if (selectedToken) {
+                            handleTokenChat({
+                              tokenChatInput: 'Preview Swap',
+                              selectedToken,
+                              setTokenChatMessages,
+                              setTokenChatInput,
+                              setLoadingAction,
+                              publicKey,
+                              signTransaction,
+                            });
+                          }
+                        }}
                         disabled={loadingAction}
                         className="bg-gradient-to-r from-purple-700 to-blue-700 text-white px-3 py-1 rounded-lg text-sm hover:from-purple-600 hover:to-blue-600 transition-all duration-300 shadow-md"
                       >
@@ -717,7 +803,7 @@ export default function ChatPage() {
                       value={agentForm.name}
                       onChange={(e) => setAgentForm({ ...agentForm, name: e.target.value })}
                       placeholder="Enter agent name"
-                      className="w-full bg-gradient-to-r from-gray-700 to-gray-800 text-white text-sm rounded-lg px-4 py-2 outline-none shadow-inner"
+                      className="w-full px-4 py-2 rounded-lg bg-gradient-to-r from-gray-700 to-gray-800 text-white text-sm outline-none shadow-md"
                     />
                   </div>
                   <div>
@@ -725,7 +811,7 @@ export default function ChatPage() {
                     <select
                       value={agentForm.type}
                       onChange={(e) => setAgentForm({ ...agentForm, type: e.target.value as 'trading' | 'tutor', condition: '', knowledgeBase: '' })}
-                      className="w-full bg-gradient-to-r from-gray-700 to-gray-800 text-white text-sm rounded-lg px-4 py-2 outline-none shadow-inner"
+                      className="w-full px-4 py-2 rounded-lg bg-gradient-to-r from-gray-700 to-gray-800 text-white text-sm outline-none shadow-md"
                     >
                       <option value="trading">Trading AI</option>
                       <option value="tutor">Tutor AI</option>
@@ -739,7 +825,7 @@ export default function ChatPage() {
                         value={agentForm.condition}
                         onChange={(e) => setAgentForm({ ...agentForm, condition: e.target.value })}
                         placeholder="e.g., If BONK reaches 30k then buy it"
-                        className="w-full bg-gradient-to-r from-gray-700 to-gray-800 text-white text-sm rounded-lg px-4 py-2 outline-none shadow-inner"
+                        className="w-full px-4 py-2 rounded-lg bg-gradient-to-r from-gray-700 to-gray-800 text-white text-sm outline-none shadow-md"
                       />
                     </div>
                   ) : (
@@ -749,20 +835,20 @@ export default function ChatPage() {
                         value={agentForm.knowledgeBase}
                         onChange={(e) => setAgentForm({ ...agentForm, knowledgeBase: e.target.value })}
                         placeholder="Enter knowledge base content"
-                        className="w-full bg-gradient-to-r from-gray-700 to-gray-800 text-white text-sm rounded-lg px-4 py-2 outline-none shadow-inner h-24"
+                        className="w-full px-4 py-2 rounded-lg bg-gray-800 text-white text-sm h-24 outline-none shadow-md"
                       />
                     </div>
                   )}
                   <div className="flex gap-4">
                     <button
                       onClick={handleAgentFormSubmit}
-                      className="bg-gradient-to-r from-purple-700 to-blue-700 text-white py-2 px-4 rounded-lg hover:from-purple-600 hover:to-blue-600 transition-all duration-300 shadow-md"
+                      className="bg-gradient-to-r from-purple-700 to-blue-700 py-2 px-4 rounded-lg text-white hover:from-purple-600 hover:to-blue-600 transition-all duration-300 shadow-md"
                     >
                       Create Agent
                     </button>
                     <button
                       onClick={() => setShowAgentForm(false)}
-                      className="bg-gradient-to-r from-gray-700 to-gray-800 text-gray-300 py-2 px-4 rounded-lg hover:from-purple-600 hover:to-blue-600 hover:text-white transition-all duration-300"
+                      className="bg-gradient-to-r from-gray-700 to-gray-800 py-2 px-4 rounded-lg text-gray-300 hover:from-purple-600 hover:to-blue-600 hover:text-white transition-all duration-300 shadow-md"
                     >
                       Cancel
                     </button>
@@ -779,7 +865,7 @@ export default function ChatPage() {
                       className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                     >
                       <div
-                        className={`max-w-md px-4 py-3 rounded-xl text-sm shadow-md ${
+                        className={`max-w-md px-4 py-3 rounded-lg text-sm shadow-md ${
                           msg.role === 'user' ? 'bg-gradient-to-r from-purple-700 to-blue-700' : 'bg-gradient-to-r from-gray-700 to-gray-800'
                         }`}
                       >
@@ -788,7 +874,7 @@ export default function ChatPage() {
                     </div>
                   ))}
                 </div>
-                <div className="flex items-center gap-2 bg-gradient-to-r from-purple-800 to-blue-800 rounded-xl px-4 py-2 shadow-md">
+                <div className="flex items-center gap-2 bg-gradient-to-r from-purple-800 to-blue-800 rounded-lg px-4 py-2 shadow-md">
                   <input
                     type="text"
                     placeholder="Interact with your agent..."
@@ -804,7 +890,7 @@ export default function ChatPage() {
                         setAgentChatInput('');
                       }
                     }}
-                    className="bg-transparent flex-1 text-sm outline-none text-white placeholder-gray-400"
+                    className="bg-transparent text-white flex-1 text-sm outline-none placeholder-gray-400"
                   />
                   <button
                     onClick={() => {
@@ -843,7 +929,7 @@ export default function ChatPage() {
                       value={ruleForm.minSwapAmount}
                       onChange={(e) => setRuleForm({ ...ruleForm, minSwapAmount: e.target.value })}
                       placeholder="e.g., 10"
-                      className="w-full bg-gradient-to-r from-gray-700 to-gray-800 text-white text-sm rounded-lg px-4 py-2 outline-none shadow-inner"
+                      className="w-full px-4 py-2 rounded-lg bg-gradient-to-r from-gray-700 to-gray-800 text-white text-sm outline-none shadow-md"
                     />
                   </div>
                   <div>
@@ -853,7 +939,7 @@ export default function ChatPage() {
                       value={ruleForm.maxSwapAmount}
                       onChange={(e) => setRuleForm({ ...ruleForm, maxSwapAmount: e.target.value })}
                       placeholder="e.g., 100"
-                      className="w-full bg-gradient-to-r from-gray-700 to-gray-800 text-white text-sm rounded-lg px-4 py-2 outline-none shadow-inner"
+                      className="w-full px-4 py-2 rounded-lg bg-gradient-to-r from-gray-700 to-gray-800 text-white text-sm outline-none shadow-md"
                     />
                   </div>
                   <div className="flex items-center gap-2">
@@ -877,13 +963,13 @@ export default function ChatPage() {
                   <div className="flex gap-4">
                     <button
                       onClick={handleRuleFormSubmit}
-                      className="bg-gradient-to-r from-purple-700 to-blue-700 text-white py-2 px-4 rounded-lg hover:from-purple-600 hover:to-blue-600 transition-all duration-300 shadow-md"
+                      className="bg-gradient-to-r from-purple-700 to-blue-700 py-2 px-4 rounded-lg text-white hover:from-purple-600 hover:to-blue-600 transition-all duration-300 shadow-md"
                     >
                       Create Rule
                     </button>
                     <button
                       onClick={() => setShowRuleForm(false)}
-                      className="bg-gradient-to-r from-gray-700 to-gray-800 text-gray-300 py-2 px-4 rounded-lg hover:from-purple-600 hover:to-blue-600 hover:text-white transition-all duration-300"
+                      className="bg-gradient-to-r from-gray-700 to-gray-800 py-2 px-4 rounded-lg text-gray-300 hover:from-purple-600 hover:to-blue-600 hover:text-white transition-all duration-300 shadow-md"
                     >
                       Cancel
                     </button>

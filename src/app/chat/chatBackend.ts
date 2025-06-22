@@ -1,10 +1,49 @@
-const OLLAMA_URL = "https://1f67-49-47-216-27.ngrok-free.app/api";
-const EMBED_URL = "http://localhost:11434";
+const OLLAMA_URL = "https://9024-2409-40f0-1017-b46c-756f-354-cd14-880.ngrok-free.app/api";
+const EMBED_URL = "https://9024-2409-40f0-1017-b46c-756f-354-cd14-880.ngrok-free.app";
 const QDRANT_URL = "http://localhost:6333";
 const COLLECTION_NAME = "jupiter_hackthon";
 const MAX_RETRIEVED_DOCS = 4;
 
-export const queryVectorCollection = async (query: string, objectId: string | null = null, topK: number = MAX_RETRIEVED_DOCS) => {
+// Define interfaces for type safety
+interface QdrantFilter {
+  must: Array<{
+    key: string;
+    match: { value: string };
+  }>;
+}
+
+interface QdrantSearchPayload {
+  vector: number[];
+  limit: number;
+  with_payload: boolean;
+  filter?: QdrantFilter;
+}
+
+interface Metadata {
+  file: string;
+  page_range: string;
+  objectId?: string;
+}
+
+interface QdrantHit {
+  payload: {
+    text: string;
+    metadata: Metadata;
+  };
+  score: number;
+}
+
+interface RankedResult {
+  text: string;
+  metadata: Metadata;
+  score: number;
+}
+
+export const queryVectorCollection = async (
+  query: string,
+  objectId: string | null = null,
+  topK: number = MAX_RETRIEVED_DOCS
+) => {
   try {
     // Generate query embedding with retry
     let queryEmbedding: number[] = [];
@@ -18,7 +57,7 @@ export const queryVectorCollection = async (query: string, objectId: string | nu
             prompt: query,
           }),
         });
-        console.log(response)
+        console.log(response);
         const data = await response.json();
         queryEmbedding = data.embedding;
         break;
@@ -32,7 +71,7 @@ export const queryVectorCollection = async (query: string, objectId: string | nu
     }
 
     // Prepare Qdrant search query
-    const searchPayload: any = {
+    const searchPayload: QdrantSearchPayload = {
       vector: queryEmbedding,
       limit: topK * 2, // Retrieve more for reranking
       with_payload: true,
@@ -57,19 +96,18 @@ export const queryVectorCollection = async (query: string, objectId: string | nu
     });
     const searchResults = (await searchResponse.json()).result;
 
-    // Simulate reranking (cross-encoder not directly available in JS)
-    // TODO: Replace with actual cross-encoder API if available
-    const rankedResults = searchResults
-      .map((hit: any) => ({
+    // Simulate reranking
+    const rankedResults: RankedResult[] = searchResults
+      .map((hit: QdrantHit) => ({
         text: hit.payload.text,
         metadata: hit.payload.metadata,
         score: hit.score,
       }))
-      .sort((a: any, b: any) => b.score - a.score)
+      .sort((a: RankedResult, b: RankedResult) => b.score - a.score)
       .slice(0, topK);
 
     const retrievedDocs = rankedResults.map(
-      (hit: any) =>
+      (hit: RankedResult) =>
         `${hit.text}\n[Source: ${hit.metadata.file}, Pages: ${hit.metadata.page_range}]`
     );
 

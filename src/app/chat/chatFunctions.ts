@@ -1,6 +1,17 @@
-import { PublicKey } from '@solana/web3.js';
+interface Token {
+  symbol: string;
+  address: string;
+  decimals: number;
+  name: string;
+  daily_volume?: number;
+  created_at: string;
+  tags?: string[];
+  extensions?: {
+    coingeckoId?: string;
+  };
+}
 
-export const parseNLPInput = async (input: string, token: any) => {
+export const parseNLPInput = async (input: string, token: Token) => {
   try {
     const systemPrompt = `You are a JSON-only assistant for a Solana DeFi application. 
 
@@ -28,7 +39,7 @@ Command to analyze: "${input}"
 
 Return ONLY JSON, no explanations.`;
 
-    const response = await fetch('https://1f67-49-47-216-27.ngrok-free.app/api/generate', {
+    const response = await fetch('https://9024-2409-40f0-1017-b46c-756f-354-cd14-880.ngrok-free.app/api/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -135,7 +146,7 @@ export const getCurrentTokenPrice = async (tokenAddress: string, coingeckoId?: s
   }
 };
 
-export const queryLLM = async (input: string, token: any) => {
+export const queryLLM = async (input: string, token: Token) => {
   try {
     const price = await getCurrentTokenPrice(token.address, token.extensions?.coingeckoId);
     const tokenInfo = {
@@ -171,7 +182,7 @@ RESPONSE STYLE:
 - Include relevant numbers/stats when available
 - Suggest related actions when appropriate`;
 
-    const response = await fetch('https://7ef8-45-119-114-222.ngrok-free.app/api/generate', {
+    const response = await fetch('https://9024-2409-40f0-1017-b46c-756f-354-cd14-880.ngrok-free.app/api/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
